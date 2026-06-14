@@ -16,6 +16,9 @@ Apple-Silicon Mac with Rosetta 2.
 > your own risk** — it is provided as-is, with no warranty, and is not affiliated with or
 > endorsed by the Beyond All Reason team or the Recoil, Mesa, Wine, or MoltenVK projects.
 > Back up anything you care about (Wine prefix, app bundles) before you start.
+>
+> Honestly, I have no idea what half of what's in this repo actually does — I just wanted
+> to play BAR on my M4 Air, and this is what it took to get there.
 
 ---
 
