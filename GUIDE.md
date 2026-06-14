@@ -99,6 +99,7 @@ endian = 'little'
 ```bash
 cd ~/BAR-on-mac/wine-mesa/mesa-25.1.9
 meson setup build-win --cross-file ~/BAR-on-mac/mingw-x64.cross \
+  -Dbuildtype=release \
   -Dgallium-drivers=zink -Dvulkan-drivers= -Dplatforms=windows -Dopengl=true \
   -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled -Dglvnd=false \
   -Dshared-glapi=enabled -Dllvm=disabled -Dshader-cache=disabled \
@@ -236,14 +237,17 @@ Rebuild (§3d incremental) and redeploy the two DLLs (§3e) after each patch.
 
 In `.../Beyond-All-Reason/data/`:
 
-- **`springsettings.cfg`** — force the simple forward render path & turn debug off for perf:
+- **`springsettings.cfg`** — the only setting that actually matters here is the audio one:
   ```
-  AllowDeferredMapRendering = 0
-  AllowDeferredModelRendering = 0
-  AllowDrawMapDeferredEvents = 0
-  DebugGL = 0
   UseSDLAudio = 0
+  DebugGL = 0
   ```
+  **Note:** the *actual working setup this guide is based on* leaves **deferred rendering at
+  its default (ON)** — `AllowDeferredMapRendering`/`AllowDeferredModelRendering` are `1`, and
+  it renders fine and smooth. During diagnosis we tried forcing the forward path
+  (`AllowDeferred*Rendering = 0`) to fix the black screen; it **didn't** help — the real fix
+  was the two Session-5 zink patches (§4 Set B). So you do **not** need to disable deferred
+  rendering. (`DebugGL = 0` is just the default; set it to `1` only when debugging, see §7.)
 - **Smooth audio:** with `UseSDLAudio = 0` (above) OpenAL Soft drives Wine's audio directly
   instead of through an SDL loopback buffer, so its buffer settings apply. Create
   `.../engine/recoil_2025.06.24/alsoft.ini` to give it a deep, multi-period buffer (kills
@@ -256,10 +260,6 @@ In `.../Beyond-All-Reason/data/`:
   ```
   Point OpenAL Soft at it via `ALSOFT_CONF` in the launcher (§7). Bump `period_size` to 2048
   if any crackle remains.
-  (BAR's in-game "Deferred rendering GL4" / "Bloom Shader Deferred" / "Distortion GL4"
-  widgets re-force deferred on; disable them by setting their `order = 0` in
-  `data/LuaUI/Config/BYAR.lua` if you want the cfg values to stick. Deferred is **not**
-  required for a working picture; forward renders fine.)
 - **Chobby (only needed for the raw-engine lobby, not the launcher's content):**
   `LuaSocketEnabled = 1`, and a `chobby_config.json` with `"game":"byar"` at both
   `data/` and `data/LuaMenu/`. The launcher's content already includes this.

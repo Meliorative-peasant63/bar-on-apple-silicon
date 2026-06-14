@@ -34,10 +34,11 @@ running max. Biggest wins:
 - **Water** — use the cheap reflective/forward water, not the expensive shader water.
 - **Particles / unit detail** — lower the particle and reflection quality; reduce max
   particles.
-- **VSync off** + cap FPS to your display (e.g. 60) to avoid wasted frames and reduce input
-  lag.
-- Keep the **forward** render path (`AllowDeferred*Rendering = 0`, see `GUIDE.md` §6) —
-  deferred buys nothing here and costs frames.
+- **VSync** — the working setup used `VSync = 4`; try VSync off and cap FPS to your display
+  (e.g. 60) if you'd rather minimize input lag over tearing.
+
+(Deferred rendering does **not** need to be disabled — the verified setup runs with it ON;
+see `GUIDE.md` §6.)
 
 Tune these in-game under **Settings → Graphics**; set them low first, then raise individual
 options until the frame rate dips. An RTS is very playable at 40–60 FPS.
