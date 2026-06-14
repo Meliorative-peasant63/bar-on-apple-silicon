@@ -1,0 +1,352 @@
+diff --git a/src/gallium/drivers/zink/zink_compiler.c b/src/gallium/drivers/zink/zink_compiler.c
+index 1d751d51..49b6d7fd 100644
+--- a/src/gallium/drivers/zink/zink_compiler.c
++++ b/src/gallium/drivers/zink/zink_compiler.c
+@@ -1265,6 +1265,8 @@ amd_varying_expression_max_cost(nir_shader *producer, nir_shader *consumer)
+    }
+ }
+ 
++static bool zink_io_quirk_moltenvk = false;
++
+ void
+ zink_screen_init_compiler(struct zink_screen *screen)
+ {
+@@ -1365,6 +1367,9 @@ zink_screen_init_compiler(struct zink_screen *screen)
+    if (screen->info.have_EXT_shader_demote_to_helper_invocation)
+       screen->nir_options.discard_is_demote = true;
+ 
++   /* BAR-on-mac: see create_io_var / update_io_var_state */
++   zink_io_quirk_moltenvk = zink_driverid(screen) == VK_DRIVER_ID_MOLTENVK;
++
+    screen->nir_options.support_indirect_inputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES);
+    screen->nir_options.support_indirect_outputs = (uint8_t)BITFIELD_MASK(PIPE_SHADER_TYPES);
+ }
+@@ -5254,7 +5259,16 @@ update_io_var_state(nir_intrinsic_instr *intr, struct rework_io_state *ris)
+     * - ignore no-overlapping-components case
+     * - always match fbfetch and dual src blend
+     */
+-   if (ris->component_mask &&
++   /* BAR-on-mac: Metal links varyings by location+component; merge disjoint
++    * component groups of FS inputs into one variable so producer/consumer
++    * structs match after MSL conversion.
++    */
++   bool merge_disjoint = zink_io_quirk_moltenvk &&
++                         ris->stage == MESA_SHADER_FRAGMENT &&
++                         ris->mode == nir_var_shader_in &&
++                         ris->fb_fetch_output == sem.fb_fetch_output &&
++                         ris->dual_source_blend_index == sem.dual_source_blend_index;
++   if (ris->component_mask && !merge_disjoint &&
+        (!(ris->component_mask & cmask) || ris->fb_fetch_output != sem.fb_fetch_output || ris->dual_source_blend_index != sem.dual_source_blend_index)) {
+       ris->ignored_component_mask |= cmask;
+       return;
+@@ -5390,6 +5404,17 @@ create_io_var(nir_shader *nir, struct rework_io_state *ris)
+    }
+    /* calculate vec/array type */
+    int frac = ffs(ris->component_mask) - 1;
++   /* BAR-on-mac: expand user varyings to vec4 at component 0 on both sides
++    * so MSL in/out structs always match (Metal links by location+component).
++    */
++   if (zink_io_quirk_moltenvk && ris->bit_size == 32 && !ris->arrayed_io &&
++       !ris->fb_fetch_output && !ris->array_size &&
++       ((ris->mode == nir_var_shader_in && ris->stage == MESA_SHADER_FRAGMENT) ||
++        (ris->mode == nir_var_shader_out && ris->stage == MESA_SHADER_VERTEX &&
++         !nir_slot_is_sysval_output(ris->location, MESA_SHADER_FRAGMENT)))) {
++      ris->component_mask = BITFIELD_MASK(4);
++      frac = 0;
++   }
+    int num_components = util_last_bit(ris->component_mask) - frac;
+    assert(ris->component_mask == BITFIELD_RANGE(frac, num_components));
+    const struct glsl_type *vec_type = glsl_vector_type(nir_get_glsl_base_type_for_nir_type(ris->type), num_components);
+diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
+index 30b5af4c..3e589c05 100644
+--- a/src/gallium/drivers/zink/zink_draw.cpp
++++ b/src/gallium/drivers/zink/zink_draw.cpp
+@@ -269,6 +269,14 @@ update_gfx_pipeline(struct zink_context *ctx, struct zink_batch_state *bs, enum
+          pipeline = zink_get_gfx_pipeline<DYNAMIC_STATE, true>(ctx, ctx->curr_program, &ctx->gfx_pipeline_state, mode);
+       else
+          pipeline = zink_get_gfx_pipeline<DYNAMIC_STATE, false>(ctx, ctx->curr_program, &ctx->gfx_pipeline_state, mode);
++      /* BAR-on-mac: host driver may fail pipeline compile; flag so the
++       * caller can skip the draw instead of falling into the shader-object
++       * path (unsupported on this stack).
++       */
++      if (!pipeline) {
++         ctx->gfx_pipeline_state.pipeline = VK_NULL_HANDLE;
++         return false;
++      }
+    }
+    if (pipeline) {
+       pipeline_changed = prev_pipeline != pipeline;
+@@ -520,6 +528,9 @@ zink_draw(struct pipe_context *pctx,
+       zink_emit_stream_output_targets(pctx);
+ 
+    bool pipeline_changed = update_gfx_pipeline<DYNAMIC_STATE, BATCH_CHANGED>(ctx, bs, mode);
++   /* BAR-on-mac: pipeline compile failed; skip this draw */
++   if (!ctx->curr_program->base.uses_shobj && !ctx->gfx_pipeline_state.pipeline)
++      return;
+ 
+    if (BATCH_CHANGED || ctx->vp_state_changed || (DYNAMIC_STATE == ZINK_NO_DYNAMIC_STATE && pipeline_changed)) {
+       VkViewport viewports[PIPE_MAX_VIEWPORTS];
+diff --git a/src/gallium/drivers/zink/zink_pipeline.c b/src/gallium/drivers/zink/zink_pipeline.c
+index a5f151fe..94bc5fb9 100644
+--- a/src/gallium/drivers/zink/zink_pipeline.c
++++ b/src/gallium/drivers/zink/zink_pipeline.c
+@@ -416,6 +416,35 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
+       u_rwlock_wrunlock(&prog->base.pipeline_cache_lock);
+       if (result != VK_SUCCESS) {
+          mesa_loge("ZINK: vkCreateGraphicsPipelines failed (%s)", vk_Result_to_str(result));
++         if (getenv("ZINK_PIPE_DEBUG")) {
++            mesa_loge("ZINK-PIPE: stages=%u topo=%d poly=%d lineRast=%d stipple=%d samples=%d",
++                      pci.stageCount,
++                      pci.pInputAssemblyState ? (int)pci.pInputAssemblyState->topology : -1,
++                      pci.pRasterizationState ? (int)pci.pRasterizationState->polygonMode : -1,
++                      rast_line_state.lineRasterizationMode,
++                      (int)rast_line_state.stippledLineEnable,
++                      pci.pMultisampleState ? (int)pci.pMultisampleState->rasterizationSamples : -1);
++            if (pci.pColorBlendState)
++               mesa_loge("ZINK-PIPE: logicOpEnable=%d logicOp=%d attachments=%u",
++                         (int)pci.pColorBlendState->logicOpEnable,
++                         (int)pci.pColorBlendState->logicOp,
++                         pci.pColorBlendState->attachmentCount);
++            if (pci.pMultisampleState)
++               mesa_loge("ZINK-PIPE: alphaToOne=%d alphaToCov=%d sampleShading=%d",
++                         (int)pci.pMultisampleState->alphaToOneEnable,
++                         (int)pci.pMultisampleState->alphaToCoverageEnable,
++                         (int)pci.pMultisampleState->sampleShadingEnable);
++            if (pci.pVertexInputState) {
++               for (unsigned vi = 0; vi < pci.pVertexInputState->vertexAttributeDescriptionCount; vi++)
++                  mesa_loge("ZINK-PIPE: attr%u fmt=%d", vi,
++                            (int)pci.pVertexInputState->pVertexAttributeDescriptions[vi].format);
++            }
++            if (pci.pDepthStencilState)
++               mesa_loge("ZINK-PIPE: depthTest=%d depthBounds=%d stencil=%d",
++                         (int)pci.pDepthStencilState->depthTestEnable,
++                         (int)pci.pDepthStencilState->depthBoundsTestEnable,
++                         (int)pci.pDepthStencilState->stencilTestEnable);
++         }
+          return VK_NULL_HANDLE;
+       }
+    );
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 58f1f740..96dc31f1 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -3467,6 +3467,19 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
+    }
+ #endif // VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
+ 
++   /* BAR-on-mac: venus hides KHR_portability_subset, so Metal-backed hosts
++    * (MoltenVK) look like full Vulkan. Metal has no triangle fans; detect by
++    * device name and let gallium lower fans via u_primconvert.
++    */
++   if (zink_driverid(screen) == VK_DRIVER_ID_MOLTENVK) {
++      if (getenv("ZINK_PIPE_DEBUG"))
++         mesa_loge("ZINK-QUIRK: applying MoltenVK quirks");
++      screen->have_triangle_fans = false;
++      /* host SPIRV-Cross targets MSL < 2.3 and rejects OpDemoteToHelperInvocation */
++      screen->info.have_EXT_shader_demote_to_helper_invocation = false;
++      screen->info.demote_feats.shaderDemoteToHelperInvocation = false;
++   }
++
+    check_base_requirements(screen);
+    util_live_shader_cache_init(&screen->shaders, zink_create_gfx_shader_state, zink_delete_shader_state);
+ 
+diff --git a/src/virtio/vulkan/vn_device.c b/src/virtio/vulkan/vn_device.c
+index d328bc2f..0df4a4c2 100644
+--- a/src/virtio/vulkan/vn_device.c
++++ b/src/virtio/vulkan/vn_device.c
+@@ -213,6 +213,10 @@ merge_extension_names(const char *const *exts,
+ 
+    *out_exts = merged;
+    *out_count = count;
++   if (getenv("VN_EXT_DEBUG")) {
++      for (uint32_t i = 0; i < count; i++)
++         fprintf(stderr, "VN-HOST-EXT: %s\\n", merged[i]);
++   }
+    return true;
+ }
+ 
+@@ -236,7 +240,9 @@ vn_device_fix_create_info(const struct vn_device *dev,
+       app_exts->KHR_swapchain || app_exts->ANDROID_native_buffer ||
+       app_exts->ANDROID_external_memory_android_hardware_buffer;
+    if (has_wsi) {
+-      if (!app_exts->EXT_image_drm_format_modifier) {
++      /* BAR-on-mac: sw WSI needs no renderer-side WSI extensions */
++      if (!physical_dev->wsi_device.sw &&
++          !app_exts->EXT_image_drm_format_modifier) {
+          extra_exts[extra_count++] =
+             VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME;
+ 
+@@ -247,7 +253,8 @@ vn_device_fix_create_info(const struct vn_device *dev,
+          }
+       }
+ 
+-      if (!app_exts->EXT_queue_family_foreign) {
++      if (!physical_dev->wsi_device.sw &&
++          !app_exts->EXT_queue_family_foreign) {
+          extra_exts[extra_count++] =
+             VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME;
+       }
+@@ -285,7 +292,8 @@ vn_device_fix_create_info(const struct vn_device *dev,
+    }
+ 
+    if (app_exts->KHR_external_memory_fd ||
+-       app_exts->EXT_external_memory_dma_buf || has_wsi) {
++       app_exts->EXT_external_memory_dma_buf ||
++       (has_wsi && !physical_dev->wsi_device.sw)) {
+       if (physical_dev->external_memory.renderer_handle_type ==
+           VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
+          if (!app_exts->EXT_external_memory_dma_buf) {
+@@ -300,8 +308,8 @@ vn_device_fix_create_info(const struct vn_device *dev,
+    }
+ 
+    /* see vn_queue_submission_count_batch_semaphores */
+-   if (!app_exts->KHR_external_semaphore_fd && has_wsi) {
+-      assert(physical_dev->renderer_sync_fd.semaphore_importable);
++   if (!app_exts->KHR_external_semaphore_fd && has_wsi &&
++       physical_dev->renderer_sync_fd.semaphore_importable) {
+       extra_exts[extra_count++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+    }
+ 
+diff --git a/src/virtio/vulkan/vn_physical_device.c b/src/virtio/vulkan/vn_physical_device.c
+index 77fff991..e6be63ac 100644
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -1181,8 +1181,8 @@ vn_physical_device_get_native_extensions(
+    }
+ 
+ #ifdef VN_USE_WSI_PLATFORM
+-   if (can_external_mem &&
+-       physical_dev->renderer_sync_fd.semaphore_importable) {
++   /* BAR-on-mac: sw WSI present path works without sync fd import */
++   if (can_external_mem) {
+       exts->KHR_incremental_present = true;
+       exts->KHR_swapchain = true;
+       exts->KHR_swapchain_mutable_format = true;
+@@ -1660,6 +1660,15 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
+ 
+    vn_physical_device_init_memory_properties(physical_dev);
+ 
++   if (getenv("VN_EXT_DEBUG")) {
++      fprintf(stderr, "VN-SYNC: has_external_sync=%d renderer_ext_sem_fd=%d "
++              "sem_importable=%d sem_exportable=%d fence_exportable=%d\\n",
++              physical_dev->instance->renderer->info.has_external_sync,
++              physical_dev->renderer_extensions.KHR_external_semaphore_fd,
++              physical_dev->renderer_sync_fd.semaphore_importable,
++              physical_dev->renderer_sync_fd.semaphore_exportable,
++              physical_dev->renderer_sync_fd.fence_exportable);
++   }
+    result = vn_wsi_init(physical_dev);
+    if (result != VK_SUCCESS)
+       goto fail;
+diff --git a/src/virtio/vulkan/vn_queue.c b/src/virtio/vulkan/vn_queue.c
+index 96acb855..5db74a55 100644
+--- a/src/virtio/vulkan/vn_queue.c
++++ b/src/virtio/vulkan/vn_queue.c
+@@ -1432,6 +1432,13 @@ vn_fence_signal_wsi(struct vn_device *dev, struct vn_fence *fence)
+ {
+    struct vn_sync_payload *temp = &fence->temporary;
+ 
++   if (!dev->physical_device->renderer_sync_fd.semaphore_importable) {
++      /* BAR-on-mac: see vn_semaphore_signal_wsi */
++      vn_QueueSubmit(vn_queue_to_handle(&dev->queues[0]), 0, NULL,
++                     vn_fence_to_handle(fence));
++      return;
++   }
++
+    vn_sync_payload_release(dev, temp);
+    temp->type = VN_SYNC_TYPE_IMPORTED_SYNC_FD;
+    temp->fd = -1;
+@@ -1913,6 +1920,24 @@ vn_semaphore_signal_wsi(struct vn_device *dev, struct vn_semaphore *sem)
+ {
+    struct vn_sync_payload *temp = &sem->temporary;
+ 
++   if (!dev->physical_device->renderer_sync_fd.semaphore_importable) {
++      /* BAR-on-mac: the renderer cannot import sync fds, so the payload
++       * trick (scrubbed at submit via vkImportSemaphoreResourceMESA) would
++       * crash hosts without VK_KHR_external_semaphore_fd. With sw WSI the
++       * image is fully ready at acquire time, so signal the semaphore for
++       * real with an empty queue submission instead.
++       */
++      VkSemaphore sem_handle = vn_semaphore_to_handle(sem);
++      const VkSubmitInfo submit_info = {
++         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
++         .signalSemaphoreCount = 1,
++         .pSignalSemaphores = &sem_handle,
++      };
++      vn_QueueSubmit(vn_queue_to_handle(&dev->queues[0]), 1, &submit_info,
++                     VK_NULL_HANDLE);
++      return;
++   }
++
+    vn_sync_payload_release(dev, temp);
+    temp->type = VN_SYNC_TYPE_IMPORTED_SYNC_FD;
+    temp->fd = -1;
+diff --git a/src/virtio/vulkan/vn_renderer_virtgpu.c b/src/virtio/vulkan/vn_renderer_virtgpu.c
+index 17476f56..e59fd319 100644
+--- a/src/virtio/vulkan/vn_renderer_virtgpu.c
++++ b/src/virtio/vulkan/vn_renderer_virtgpu.c
+@@ -1554,6 +1554,12 @@ virtgpu_init_params(struct virtgpu *gpu)
+ static VkResult
+ virtgpu_open_device(struct virtgpu *gpu, const drmDevicePtr dev)
+ {
++   /* BAR-on-mac: allow explicit render node selection */
++   const char *want_node = getenv("VN_RENDER_NODE");
++   if (want_node && (!(dev->available_nodes & (1 << DRM_NODE_RENDER)) ||
++                     strcmp(dev->nodes[DRM_NODE_RENDER], want_node)))
++      return VK_ERROR_INITIALIZATION_FAILED;
++
+    bool supported_bus = false;
+ 
+    switch (dev->bustype) {
+diff --git a/src/virtio/vulkan/vn_wsi.c b/src/virtio/vulkan/vn_wsi.c
+index e0601fd1..51f17fac 100644
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -79,7 +79,8 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
+     * blit path works there.
+     */
+    const bool use_sw_device =
+-      physical_dev->renderer_driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
++      physical_dev->renderer_driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
++      !physical_dev->renderer_sync_fd.semaphore_importable;
+ 
+    const VkAllocationCallbacks *alloc =
+       &physical_dev->instance->base.vk.alloc;
+diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
+index 8ade0e7b..aa38b95f 100644
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -1516,6 +1516,12 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
+ 
+    xcb_void_cookie_t cookie;
+    void *myptr = image->base.cpu_map;
++   if (getenv("WSI_SW_DEBUG")) {
++      VkResult wres = chain->base.wsi->WaitForFences(chain->base.device, 1,
++         &chain->base.fences[image_index], true, 2000000000ull);
++      fprintf(stderr, "WSI-SW: img %u fence wait = %d, first px = %08x\\n",
++              image_index, wres, *(uint32_t *)myptr);
++   }
+    size_t hdr_len = sizeof(xcb_put_image_request_t);
+    int stride_b = image->base.row_pitches[0];
+    size_t size = (hdr_len + stride_b * chain->extent.height) >> 2;
+@@ -1539,6 +1545,20 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
+          }
+       }
+    } else if (size < max_req_len) {
++      if (getenv("WSI_SW_DEBUG")) {
++         xcb_void_cookie_t dbgc = xcb_put_image_checked(chain->conn,
++            XCB_IMAGE_FORMAT_Z_PIXMAP, chain->window, chain->gc,
++            image->base.row_pitches[0] / 4, chain->extent.height,
++            0, 0, 0, chain->depth,
++            image->base.row_pitches[0] * chain->extent.height,
++            image->base.cpu_map);
++         xcb_generic_error_t *dbge = xcb_request_check(chain->conn, dbgc);
++         static int dbg_logged = 0;
++         if (dbg_logged++ < 5)
++            fprintf(stderr, "WSI-SW: put_image w=%u h=%u depth=%u err=%d\\n",
++                    image->base.row_pitches[0] / 4, chain->extent.height,
++                    chain->depth, dbge ? dbge->error_code : 0);
++      }
+       cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+                              chain->window,
+                              chain->gc,

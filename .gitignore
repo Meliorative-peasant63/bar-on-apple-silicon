@@ -1,0 +1,31 @@
+# This repo holds docs, patches, scripts, and widget ports — NOT large binaries
+# or third-party source. Don't commit any of the following if you copy them in:
+
+# Wine prefix (user-specific, multi-GB)
+wineprefix/
+*.wineprefix
+
+# Mesa source tree + build output (clone/build yourself per GUIDE.md)
+wine-mesa/
+mesa-*/
+build-win/
+*.dll
+*.dylib
+*.so
+*.a
+
+# VM images / installers (VM path only; huge)
+*.qcow2
+*.iso
+*.img
+
+# Binary backups
+*.backup
+
+# BAR content / engine (download via the official launcher per GUIDE.md)
+Beyond-All-Reason/
+engine/
+
+# macOS / editor cruft
+.DS_Store
+*.swp

@@ -1,0 +1,84 @@
+--- a/LuaUI/Widgets/gui_healthbars_gl4.lua
++++ b/LuaUI/Widgets/gui_healthbars_gl4.lua
+@@ -407,8 +407,14 @@
+ local healthBarVBO = nil
+ local healthBarShader = nil
+ 
++Spring.Echo("[HB-PORT] gui_healthbars_gl4 override v2 (bars+glyphs instanced, no GS) LOADED")
+ local LuaShader = gl.LuaShader
+ local InstanceVBOTable = gl.InstanceVBOTable
++
++-- BAR-on-mac: instanced strip = 28 bar verts (bg 8 + bridge 2 + backing 8 + bridge 2 + fg 8)
++-- + 5 glyph slots * 6 verts (2-vertex degenerate bridge + 4-vertex quad) = 58.
++local BAR_STRIP_VERTS = 58
++local barCornerVBO  -- shared static corner-index buffer (created lazily)
+ 
+ --local uploadAllElements   = InstanceVBOTable.uploadAllElements
+ local pushElementInstance = InstanceVBOTable.pushElementInstance
+@@ -455,14 +461,14 @@
+ 	shaderConfig.DEBUGSHOW = 1 -- comment this to always show all bars
+ end
+ 
+-local vsSrcPath = "LuaUI/Shaders/HealthbarsGL4.vert.glsl"
+-local gsSrcPath = "LuaUI/Shaders/HealthbarsGL4.geom.glsl"
++-- BAR-on-mac: GS merged into the vertex shader (MoltenVK has no geometry stage).
++local vsSrcPath = "LuaUI/Shaders/HealthbarsGL4_ported.vert.glsl"
+ local fsSrcPath = "LuaUI/Shaders/HealthbarsGL4.frag.glsl"
+ 
+ local shaderSourceCache = {
+ 		vssrcpath = vsSrcPath,
+ 		fssrcpath = fsSrcPath,
+-		gssrcpath = gsSrcPath,
++		-- gssrcpath removed: bars are expanded in the vertex shader via instancing
+ 		shaderName = "Health Bars Shader GL4",
+ 		uniformInt = {
+ 			healthbartexture = 0;
+@@ -547,9 +553,21 @@
+ 		4 -- unitIDattribID (instData)
+ 	)
+ 	if newVBOTable == nil then goodbye("Failed to create " .. myName) end
++
++	-- BAR-on-mac: shared static 28-vertex corner-index buffer (TRIANGLE_STRIP). The
++	-- vertex shader expands each instanced unit into the bar using these indices. A real
++	-- per-vertex buffer must be bound — MoltenVK crashes on gl_VertexID-only draws.
++	if not barCornerVBO then
++		barCornerVBO = gl.GetVBO(GL.ARRAY_BUFFER, false)
++		barCornerVBO:Define(BAR_STRIP_VERTS, {{id = 5, name = 'v_vertIdx', size = 1}})
++		local idx = {}
++		for i = 0, BAR_STRIP_VERTS - 1 do idx[i + 1] = i end
++		barCornerVBO:Upload(idx)
++	end
+ 
+ 	local newVAO = gl.GetVAO()
+-	newVAO:AttachVertexBuffer(newVBOTable.instanceVBO)
++	newVAO:AttachVertexBuffer(barCornerVBO)            -- per-vertex: 28 strip corners
++	newVAO:AttachInstanceBuffer(newVBOTable.instanceVBO) -- per-instance: one unit per instance
+ 	newVBOTable.VAO = newVAO
+ 	if usesFeatures then newVBOTable.featureIDs = true end
+ 	return newVBOTable
+@@ -1269,21 +1287,21 @@
+ 		healthBarShader:SetUniform("cameraDistanceMultGlyph", glphydistmult)
+ 		healthBarShader:SetUniform("skipGlyphsNumbers",skipGlyphsNumbers)  --0.0 is everything,  1.0 means only numbers, 2.0 means only bars,
+ 		if healthBarVBO.usedElements > 0 then
+-			healthBarVBO.VAO:DrawArrays(GL.POINTS,healthBarVBO.usedElements)
++			healthBarVBO.VAO:DrawArrays(GL.TRIANGLE_STRIP, BAR_STRIP_VERTS, 0, healthBarVBO.usedElements)
+ 		end
+ 		-- below its the feature bars being drawn:
+ 			healthBarShader:SetUniform("cameraDistanceMultGlyph", glyphdistmultfeatures)
+ 			if featureHealthVBO.usedElements > 0 then
+ 				if not debugmode then healthBarShader:SetUniform("cameraDistanceMult",featureHealthDistMult)  end
+-				featureHealthVBO.VAO:DrawArrays(GL.POINTS,featureHealthVBO.usedElements)
++				featureHealthVBO.VAO:DrawArrays(GL.TRIANGLE_STRIP, BAR_STRIP_VERTS, 0, featureHealthVBO.usedElements)
+ 			end
+ 			if featureResurrectVBO.usedElements > 0 then
+ 				if not debugmode then healthBarShader:SetUniform("cameraDistanceMult",featureResurrectDistMult)  end
+-				featureResurrectVBO.VAO:DrawArrays(GL.POINTS,featureResurrectVBO.usedElements)
++				featureResurrectVBO.VAO:DrawArrays(GL.TRIANGLE_STRIP, BAR_STRIP_VERTS, 0, featureResurrectVBO.usedElements)
+ 			end
+ 			if featureReclaimVBO.usedElements > 0 then
+ 				if not debugmode then healthBarShader:SetUniform("cameraDistanceMult",featureReclaimDistMult)  end
+-				featureReclaimVBO.VAO:DrawArrays(GL.POINTS,featureReclaimVBO.usedElements)
++				featureReclaimVBO.VAO:DrawArrays(GL.TRIANGLE_STRIP, BAR_STRIP_VERTS, 0, featureReclaimVBO.usedElements)
+ 			end
+ 
+ 		healthBarShader:Deactivate()

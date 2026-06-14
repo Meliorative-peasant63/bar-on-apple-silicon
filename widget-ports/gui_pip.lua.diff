@@ -1,0 +1,561 @@
+--- a/LuaUI/Widgets/gui_pip.lua
++++ b/LuaUI/Widgets/gui_pip.lua
+@@ -1,3 +1,4 @@
++Spring.Echo("[PIP-PORT] gui_pip override v4 (icons+circles+quads+decals instanced, no GS) LOADED from write-dir")
+ local devUI = Spring.Utilities.ShowDevUI()
+ local isSinglePlayer = Spring.Utilities.Gametype.IsSinglePlayer()
+ local isSpectator = Spring.GetSpectatingState()
+@@ -2414,14 +2415,13 @@
+ layout(location = 2) in vec4 uvCoords;      // p, q, s, t (atlas UV rect)
+ layout(location = 3) in vec4 spawnParams;   // spawnframe, 0, 0, 0
+ 
++layout(location = 4) in vec2 cornerOffset;  // (-1,-1)(1,-1)(-1,1)(1,1) [per-vertex]
++
+ uniform float gameFrame;
+ uniform vec2 invMapSize;  // 2/mapSizeX, 2/mapSizeZ (factor of 2 because NDC spans -1..1)
+ 
+-out float v_alpha;
+-out vec4 v_uv;        // p, q, s, t
+-out vec2 v_halfWorld; // half-size in WORLD units (rotation must happen before NDC conversion)
+-out float v_cosR;
+-out float v_sinR;
++out vec2 f_texCoord;
++out float f_alpha;
+ 
+ void main() {
+ 	// Compute current alpha on GPU (same formula as decals widget)
+@@ -2429,78 +2429,29 @@
+ 	float currentAlpha = sizeAlpha.z - lifetonow * sizeAlpha.w;
+ 	currentAlpha = clamp(currentAlpha, 0.0, posRot.w);
+ 
+-	// Skip expired/invisible decals
++	// Skip expired/invisible decals -> degenerate
+ 	if (currentAlpha < 0.01) {
+-		v_alpha = 0.0;
++		f_alpha = 0.0;
+ 		gl_Position = vec4(2.0, 2.0, 0.0, 1.0);  // off-screen
+ 		return;
+ 	}
+ 
+-	v_alpha = currentAlpha;
+-	v_uv = uvCoords;
++	f_alpha = currentAlpha;
+ 
+ 	// World position to NDC (-1..1)
+ 	vec2 ndc = posRot.xy * invMapSize - 1.0;
+-	gl_Position = vec4(ndc, 0.0, 1.0);
+-
+-	// Pass world-space half-sizes; geometry shader rotates THEN converts to NDC
+-	v_halfWorld = sizeAlpha.xy;
+-
+-	v_cosR = cos(posRot.z);
+-	v_sinR = sin(posRot.z);
+-}
+-		]],
+-		geometry = [[
+-#version 330
+-layout(points) in;
+-layout(triangle_strip, max_vertices = 4) out;
+-
+-uniform vec2 invMapSize;
+-
+-in float v_alpha[];
+-in vec4 v_uv[];
+-in vec2 v_halfWorld[];
+-in float v_cosR[];
+-in float v_sinR[];
+-
+-out vec2 f_texCoord;
+-out float f_alpha;
+-
+-void main() {
+-	float alpha = v_alpha[0];
+-	if (alpha < 0.01) return;  // culled in vertex shader
+ 
+-	vec4 c = gl_in[0].gl_Position;
+-	vec2 hs = v_halfWorld[0];  // world-space half-sizes
+-	vec4 uv = v_uv[0];  // p, q, s, t
+-	float ca = v_cosR[0];
+-	float sa = v_sinR[0];
+-	f_alpha = alpha;
+-
+ 	// Rotate in world space (equal X/Z scale), THEN convert to NDC per-component.
+-	// Component-wise multiply (*invMapSize) applies correct scale to each axis,
+-	// preventing elliptical distortion on non-square maps.
++	float ca = cos(posRot.z);
++	float sa = sin(posRot.z);
++	vec2 hs = sizeAlpha.xy;  // world-space half-sizes
+ 	vec2 dx = vec2(ca, sa) * hs.x * invMapSize;
+ 	vec2 dy = vec2(-sa, ca) * hs.y * invMapSize;
+ 
+-	// BL: UV(p, s)
+-	gl_Position = vec4(c.xy - dx - dy, 0.0, 1.0);
+-	f_texCoord = vec2(uv.x, uv.z);
+-	EmitVertex();
+-	// BR: UV(q, s)
+-	gl_Position = vec4(c.xy + dx - dy, 0.0, 1.0);
+-	f_texCoord = vec2(uv.y, uv.z);
+-	EmitVertex();
+-	// TL: UV(p, t)
+-	gl_Position = vec4(c.xy - dx + dy, 0.0, 1.0);
+-	f_texCoord = vec2(uv.x, uv.w);
+-	EmitVertex();
+-	// TR: UV(q, t)
+-	gl_Position = vec4(c.xy + dx + dy, 0.0, 1.0);
+-	f_texCoord = vec2(uv.y, uv.w);
+-	EmitVertex();
+-
+-	EndPrimitive();
++	// GS folded in: expand to rotated quad corner via instanced cornerOffset
++	gl_Position = vec4(ndc + cornerOffset.x * dx + cornerOffset.y * dy, 0.0, 1.0);
++	f_texCoord = vec2((cornerOffset.x < 0.0) ? uvCoords.x : uvCoords.y,
++	                  (cornerOffset.y < 0.0) ? uvCoords.z : uvCoords.w);
+ }
+ 		]],
+ 		fragment = [[
+@@ -2828,9 +2779,10 @@
+ gl4Icons.shaderCode = {
+ 	vertex = [[
+ #version 330
+-layout(location = 0) in vec4 worldPos_size;  // worldX, worldZ, iconSizeScale, flags (bitfield)
+-layout(location = 1) in vec4 atlasUV;         // u0, v0, u1, v1
+-layout(location = 2) in vec4 colorFlags;      // r, g, b, wobblePhase + flashFactor*100*7
++layout(location = 0) in vec4 worldPos_size;  // worldX, worldZ, iconSizeScale, flags (bitfield)  [instanced]
++layout(location = 1) in vec4 atlasUV;         // u0, v0, u1, v1                                    [instanced]
++layout(location = 2) in vec4 colorFlags;      // r, g, b, wobblePhase + flashFactor*100*7          [instanced]
++layout(location = 3) in vec2 cornerOffset;    // per-vertex quad corner: (-1,-1)(1,-1)(-1,1)(1,1)  [per-vertex]
+ 
+ uniform vec2 wtp_scale;      // worldToPipScaleX, worldToPipScaleZ
+ uniform vec2 wtp_offset;     // worldToPipOffsetX, worldToPipOffsetZ
+@@ -2843,10 +2795,10 @@
+ uniform float outlinePass;   // 0 = normal icon draw, 1 = tracked unit outline pass
+ uniform float healthDarkenMax;  // max darkening fraction for damaged units
+ 
+-out vec4 v_atlasUV;
+-out vec4 v_color;
+-out vec2 v_halfSizeNDC;
+-flat out float v_flash;
++// GS removed (MoltenVK has no geometry stage): expand point->quad here via gl_VertexID.
++out vec2 f_texCoord;
++out vec4 f_color;
++flat out float f_flash;
+ 
+ void main() {
+ // Decode bitfield flags: bits 0-4 = status flags, bits 5+ = health percentage (0-100)
+@@ -2886,11 +2838,9 @@
+ d.x * rotSC.x + d.y * rotSC.y
+ );
+ 
+-// PIP pixels to NDC
+-gl_Position = vec4(pipPos * ndcScale - 1.0, 0.0, 1.0);
++// PIP pixels to NDC (center of the icon quad)
++vec2 centerNDC = pipPos * ndcScale - 1.0;
+ 
+-v_atlasUV = atlasUV;
+-
+ // Start with base color and alpha
+ vec3 col = colorFlags.rgb;
+ float alpha = 1.0 - 0.25 * isRadar;  // radar icons at 75% alpha
+@@ -2927,55 +2877,22 @@
+   }
+ }
+ 
+-v_color = vec4(col, alpha);
+-v_flash = flashFactor;
++f_color = vec4(col, alpha);
++f_flash = flashFactor;
+ // Expand icon size slightly for outline pass (tracked or selfD units)
+ float hasOutline = max(isTracked, isSelfD);
+ float sizeExpand = 1.0 + 0.12 * outlinePass * hasOutline;
+-v_halfSizeNDC = vec2(iconBaseSize * worldPos_size.z * sizeExpand) * ndcScale;
++vec2 hs = vec2(iconBaseSize * worldPos_size.z * sizeExpand) * ndcScale;
++
++// Expand the per-instance point into a quad corner using the static corner buffer
++// (replaces the old geometry shader). cornerOffset is one of the 4 strip corners.
++float sx = cornerOffset.x;
++float sy = cornerOffset.y;
++gl_Position = vec4(centerNDC + vec2(sx * hs.x, sy * hs.y), 0.0, 1.0);
++f_texCoord = vec2((sx < 0.0) ? atlasUV.x : atlasUV.z,
++                  (sy < 0.0) ? atlasUV.y : atlasUV.w);
+ }
+ 	]],
+-	geometry = [[
+-		#version 330
+-		layout(points) in;
+-		layout(triangle_strip, max_vertices = 4) out;
+-
+-		in vec4 v_atlasUV[];
+-		in vec4 v_color[];
+-		in vec2 v_halfSizeNDC[];
+-		flat in float v_flash[];
+-
+-		out vec2 f_texCoord;
+-		out vec4 f_color;
+-		flat out float f_flash;
+-
+-		void main() {
+-			vec4 c = gl_in[0].gl_Position;
+-			vec4 uv = v_atlasUV[0];
+-			vec2 hs = v_halfSizeNDC[0];
+-			f_color = v_color[0];
+-			f_flash = v_flash[0];
+-
+-			// Bottom-left
+-			gl_Position = vec4(c.x - hs.x, c.y - hs.y, c.z, 1.0);
+-			f_texCoord = vec2(uv.x, uv.y);
+-			EmitVertex();
+-			// Bottom-right
+-			gl_Position = vec4(c.x + hs.x, c.y - hs.y, c.z, 1.0);
+-			f_texCoord = vec2(uv.z, uv.y);
+-			EmitVertex();
+-			// Top-left
+-			gl_Position = vec4(c.x - hs.x, c.y + hs.y, c.z, 1.0);
+-			f_texCoord = vec2(uv.x, uv.w);
+-			EmitVertex();
+-			// Top-right
+-			gl_Position = vec4(c.x + hs.x, c.y + hs.y, c.z, 1.0);
+-			f_texCoord = vec2(uv.z, uv.w);
+-			EmitVertex();
+-
+-			EndPrimitive();
+-		}
+-	]],
+ 	fragment = [[
+ 		#version 330
+ 		uniform sampler2D iconAtlas;
+@@ -3016,59 +2933,27 @@
+ 		uniform vec2 rotSC;
+ 		uniform vec2 rotCenter;
+ 
+-		out vec4 v_coreColor;
+-		out vec4 v_edgeColor;
+-		out vec2 v_halfSizeNDC;
+-		out float v_blendMode;
+-
+-		void main() {
+-			vec2 pipPos = wtp_offset + posRadius.xy * wtp_scale;
+-			vec2 d = pipPos - rotCenter;
+-			pipPos = rotCenter + vec2(d.x*rotSC.y - d.y*rotSC.x, d.x*rotSC.x + d.y*rotSC.y);
+-			gl_Position = vec4(pipPos * ndcScale - 1.0, 0.0, 1.0);
+-
+-			float radiusPIP = posRadius.z * abs(wtp_scale.x);
+-			v_halfSizeNDC = vec2(radiusPIP) * ndcScale;
+-			v_coreColor = vec4(coreColor.rgb, posRadius.w);
+-			v_edgeColor = vec4(edgeColor.rgb, coreColor.w);
+-			v_blendMode = edgeColor.w;
+-		}
+-	]],
+-	geometry = [[
+-		#version 330
+-		layout(points) in;
+-		layout(triangle_strip, max_vertices = 4) out;
++		layout(location = 3) in vec2 cornerOffset;  // (-1,-1)(1,-1)(-1,1)(1,1) [per-vertex]
+ 
+-		in vec4 v_coreColor[];
+-		in vec4 v_edgeColor[];
+-		in vec2 v_halfSizeNDC[];
+-		in float v_blendMode[];
+-
+ 		out vec2 f_localCoord;
+ 		out vec4 f_coreColor;
+ 		out vec4 f_edgeColor;
+ 		flat out float f_blendMode;
+ 
+ 		void main() {
+-			vec4 c = gl_in[0].gl_Position;
+-			vec2 hs = v_halfSizeNDC[0];
+-			f_coreColor = v_coreColor[0];
+-			f_edgeColor = v_edgeColor[0];
+-			f_blendMode = v_blendMode[0];
++			vec2 pipPos = wtp_offset + posRadius.xy * wtp_scale;
++			vec2 d = pipPos - rotCenter;
++			pipPos = rotCenter + vec2(d.x*rotSC.y - d.y*rotSC.x, d.x*rotSC.x + d.y*rotSC.y);
++			vec2 centerNDC = pipPos * ndcScale - 1.0;
+ 
+-			gl_Position = vec4(c.x - hs.x, c.y - hs.y, 0, 1);
+-			f_localCoord = vec2(-1.0, -1.0);
+-			EmitVertex();
+-			gl_Position = vec4(c.x + hs.x, c.y - hs.y, 0, 1);
+-			f_localCoord = vec2(1.0, -1.0);
+-			EmitVertex();
+-			gl_Position = vec4(c.x - hs.x, c.y + hs.y, 0, 1);
+-			f_localCoord = vec2(-1.0, 1.0);
+-			EmitVertex();
+-			gl_Position = vec4(c.x + hs.x, c.y + hs.y, 0, 1);
+-			f_localCoord = vec2(1.0, 1.0);
+-			EmitVertex();
+-			EndPrimitive();
++			float radiusPIP = posRadius.z * abs(wtp_scale.x);
++			vec2 hs = vec2(radiusPIP) * ndcScale;
++			f_coreColor = vec4(coreColor.rgb, posRadius.w);
++			f_edgeColor = vec4(edgeColor.rgb, coreColor.w);
++			f_blendMode = edgeColor.w;
++			// GS folded in: expand to quad corner via instanced cornerOffset
++			f_localCoord = cornerOffset;
++			gl_Position = vec4(centerNDC + cornerOffset * hs, 0.0, 1.0);
+ 		}
+ 	]],
+ 	fragment = [[
+@@ -3102,63 +2987,30 @@
+ 		uniform vec2 rotSC;
+ 		uniform vec2 rotCenter;
+ 
+-		out vec4 v_color;
+-		out vec2 v_halfSizePx;
+-		out float v_angle;
+-		out vec2 v_ndcScale;
+-		out vec2 v_rotSC;
++		layout(location = 3) in vec2 cornerOffset;  // (-1,-1)(1,-1)(-1,1)(1,1) [per-vertex]
+ 
++		out vec4 f_color;
++
+ 		void main() {
+ 			vec2 pipPos = wtp_offset + posSizeIn.xy * wtp_scale;
+ 			vec2 d = pipPos - rotCenter;
+ 			pipPos = rotCenter + vec2(d.x*rotSC.y - d.y*rotSC.x, d.x*rotSC.x + d.y*rotSC.y);
+-			gl_Position = vec4(pipPos * ndcScale - 1.0, 0.0, 1.0);
++			vec2 centerNDC = pipPos * ndcScale - 1.0;
+ 
+ 			float scalePIP = abs(wtp_scale.x);
+-			v_halfSizePx = vec2(posSizeIn.z * scalePIP, posSizeIn.w * scalePIP);
+-			v_ndcScale = ndcScale;
+-			v_rotSC = rotSC;
+-			v_color = colorIn;
+-			v_angle = radians(angleFlags.x);
+-		}
+-	]],
+-	geometry = [[
+-		#version 330
+-		layout(points) in;
+-		layout(triangle_strip, max_vertices = 4) out;
+-
+-		in vec4 v_color[];
+-		in vec2 v_halfSizePx[];
+-		in float v_angle[];
+-		in vec2 v_ndcScale[];
+-		in vec2 v_rotSC[];
+-
+-		out vec4 f_color;
+-
+-		void main() {
+-			vec4 c = gl_in[0].gl_Position;
+-			vec2 hs = v_halfSizePx[0];
+-			vec2 ndc = v_ndcScale[0];
+-			vec2 rsc = v_rotSC[0];
+-			f_color = v_color[0];
+-			float a = v_angle[0];
++			vec2 hs = vec2(posSizeIn.z * scalePIP, posSizeIn.w * scalePIP);
++			float a = radians(angleFlags.x);
+ 			float sa = sin(a), ca = cos(a);
+-
+-			// Combine quad rotation with map rotation to get total rotation
+-			// sin(a+m) = sa*cos(m) + ca*sin(m), cos(a+m) = ca*cos(m) - sa*sin(m)
+-			float sT = sa * rsc.y + ca * rsc.x;
+-			float cT = ca * rsc.y - sa * rsc.x;
+-
+-			// Rotate in pixel space (uniform coordinates) to avoid aspect-ratio distortion
++			// Combine quad rotation with map rotation
++			float sT = sa * rotSC.y + ca * rotSC.x;
++			float cT = ca * rotSC.y - sa * rotSC.x;
++			// Rotate in pixel space to avoid aspect distortion
+ 			vec2 dx = vec2(cT, sT) * hs.x;
+ 			vec2 dy = vec2(-sT, cT) * hs.y;
+-
+-			// Convert pixel offsets to NDC
+-			gl_Position = vec4(c.xy + (-dx - dy) * ndc, 0, 1); EmitVertex();
+-			gl_Position = vec4(c.xy + ( dx - dy) * ndc, 0, 1); EmitVertex();
+-			gl_Position = vec4(c.xy + (-dx + dy) * ndc, 0, 1); EmitVertex();
+-			gl_Position = vec4(c.xy + ( dx + dy) * ndc, 0, 1); EmitVertex();
+-			EndPrimitive();
++			f_color = colorIn;
++			// GS folded in: corner = cornerOffset.x*dx + cornerOffset.y*dy, then to NDC
++			vec2 offs = (cornerOffset.x * dx + cornerOffset.y * dy) * ndcScale;
++			gl_Position = vec4(centerNDC + offs, 0.0, 1.0);
+ 		}
+ 	]],
+ 	fragment = [[
+@@ -3272,7 +3124,21 @@
+ 	gl4Icons.instanceData = instanceData
+ 	gl4Icons.vbo = vbo
+ 
+-	-- Create VAO: attach VBO as vertex buffer (geometry shader expands points → quads)
++	-- Static 4-vertex corner buffer (TRIANGLE_STRIP quad). Each instanced icon expands
++	-- into these 4 corners in the vertex shader. MoltenVK requires a real vertex buffer
++	-- bound for instanced draws — a gl_VertexID-only draw with no vertex buffer crashes
++	-- on Metal. Shared by all three icon VAOs.
++	local cornerVbo = gl.GetVBO(GL.ARRAY_BUFFER, false)
++	if not cornerVbo then
++		Spring.Echo("[PIP] GL4 icons: Failed to create corner VBO")
++		vbo:Delete(); gl4Icons.atlas = nil; gl4Icons.vbo = nil
++		return
++	end
++	cornerVbo:Define(4, {{id = 3, name = 'cornerOffset', size = 2}})
++	cornerVbo:Upload({-1,-1,  1,-1,  -1,1,  1,1})
++	gl4Icons.cornerVbo = cornerVbo
++
++	-- Create VAO: static corner quad (per-vertex) + per-icon data (instanced)
+ 	local vao = gl.GetVAO()
+ 	if not vao then
+ 		Spring.Echo("[PIP] GL4 icons: Failed to create VAO")
+@@ -3281,7 +3147,8 @@
+ 		gl4Icons.vbo = nil
+ 		return
+ 	end
+-	vao:AttachVertexBuffer(vbo)
++	vao:AttachVertexBuffer(cornerVbo)   -- per-vertex: the 4 quad corners
++	vao:AttachInstanceBuffer(vbo)        -- per-instance: one icon per instance
+ 	gl4Icons.vao = vao
+ 
+ 	-- Building VBO/VAO: separate buffer for building+ghost icons.
+@@ -3308,7 +3175,8 @@
+ 		gl4Icons.vao = nil
+ 		return
+ 	end
+-	bldgVao:AttachVertexBuffer(bldgVbo)
++	bldgVao:AttachVertexBuffer(gl4Icons.cornerVbo)  -- per-vertex quad corners
++	bldgVao:AttachInstanceBuffer(bldgVbo)            -- per-instance icon data
+ 	gl4Icons.bldgVbo = bldgVbo
+ 	gl4Icons.bldgVao = bldgVao
+ 
+@@ -3351,7 +3219,8 @@
+ 		gl4Icons.bldgVao = nil
+ 		return
+ 	end
+-	slowVao:AttachVertexBuffer(slowVbo)
++	slowVao:AttachVertexBuffer(gl4Icons.cornerVbo)  -- per-vertex quad corners
++	slowVao:AttachInstanceBuffer(slowVbo)            -- per-instance icon data
+ 	gl4Icons.slowVbo = slowVbo
+ 	gl4Icons.slowVao = slowVao
+ 
+@@ -3457,6 +3326,14 @@
+ 
+ local function InitGL4Primitives()
+ 	if not gl.GetVAO or not gl.GetVBO then return end
++
++	-- BAR-on-mac: shared static 4-corner buffer (TRIANGLE_STRIP) for the instanced
++	-- circle/quad primitives (geometry shaders folded into their vertex shaders).
++	local primCornerVBO = gl.GetVBO(GL.ARRAY_BUFFER, false)
++	if not primCornerVBO then return end
++	primCornerVBO:Define(4, {{id = 3, name = 'cornerOffset', size = 2}})
++	primCornerVBO:Upload({-1,-1,  1,-1,  -1,1,  1,1})
++	gl4Prim.cornerVBO = primCornerVBO
+ 
+ 	-- Circle VBO/VAO
+ 	local circleLayout = {
+@@ -3469,7 +3346,8 @@
+ 	cVbo:Define(gl4Prim.CIRCLE_MAX, circleLayout)
+ 	local cVao = gl.GetVAO()
+ 	if not cVao then cVbo:Delete(); return end
+-	cVao:AttachVertexBuffer(cVbo)
++	cVao:AttachVertexBuffer(primCornerVBO)  -- per-vertex quad corners
++	cVao:AttachInstanceBuffer(cVbo)          -- per-instance circle data
+ 	local cData = {}
+ 	for i = 1, gl4Prim.CIRCLE_MAX * gl4Prim.CIRCLE_STEP do cData[i] = 0 end
+ 	gl4Prim.circles.vbo = cVbo
+@@ -3487,7 +3365,8 @@
+ 	qVbo:Define(gl4Prim.QUAD_MAX, quadLayout)
+ 	local qVao = gl.GetVAO()
+ 	if not qVao then qVbo:Delete(); cVao:Delete(); cVbo:Delete(); return end
+-	qVao:AttachVertexBuffer(qVbo)
++	qVao:AttachVertexBuffer(primCornerVBO)  -- per-vertex quad corners
++	qVao:AttachInstanceBuffer(qVbo)          -- per-instance quad data
+ 	local qData = {}
+ 	for i = 1, gl4Prim.QUAD_MAX * gl4Prim.QUAD_STEP do qData[i] = 0 end
+ 	gl4Prim.quads.vbo = qVbo
+@@ -3659,7 +3538,7 @@
+ 		local c = gl4Prim.circles
+ 		c.vbo:Upload(c.data, nil, 0, 1, c.count * gl4Prim.CIRCLE_STEP)
+ 		GL4SetPrimUniforms(c.shader, c.uniformLocs)
+-		c.vao:DrawArrays(GL.POINTS, c.count)
++		c.vao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, c.count)
+ 		gl.UseShader(0)
+ 	end
+ 
+@@ -3668,7 +3547,7 @@
+ 		local q = gl4Prim.quads
+ 		q.vbo:Upload(q.data, nil, 0, 1, q.count * gl4Prim.QUAD_STEP)
+ 		GL4SetPrimUniforms(q.shader, q.uniformLocs)
+-		q.vao:DrawArrays(GL.POINTS, q.count)
++		q.vao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, q.count)
+ 		gl.UseShader(0)
+ 	end
+ 
+@@ -3714,7 +3593,7 @@
+ 	local c = gl4Prim.circles
+ 	c.vbo:Upload(c.data, nil, 0, 1, c.count * gl4Prim.CIRCLE_STEP)
+ 	GL4SetPrimUniforms(c.shader, c.uniformLocs)
+-	c.vao:DrawArrays(GL.POINTS, c.count)
++	c.vao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, c.count)
+ 	gl.UseShader(0)
+ end
+ 
+@@ -9107,7 +8986,7 @@
+ 				local c = gl4Prim.circles
+ 				c.vbo:Upload(c.data, nil, 0, 1, c.count * gl4Prim.CIRCLE_STEP)
+ 				GL4SetPrimUniforms(c.shader, c.uniformLocs)
+-				c.vao:DrawArrays(GL.POINTS, c.count)
++				c.vao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, c.count)
+ 				gl.UseShader(0)
+ 			end
+ 
+@@ -10795,30 +10674,30 @@
+ 		if bldgUsedElements > 0 then
+ 			if hasOutlines then
+ 				gl.UniformFloat(ul.outlinePass, 1.0)
+-				gl4Icons.bldgVao:DrawArrays(GL.POINTS, bldgUsedElements)
++				gl4Icons.bldgVao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, bldgUsedElements)
+ 			end
+ 			gl.UniformFloat(ul.outlinePass, 0.0)
+-			gl4Icons.bldgVao:DrawArrays(GL.POINTS, bldgUsedElements)
++			gl4Icons.bldgVao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, bldgUsedElements)
+ 		end
+ 
+ 		-- Slow mobile (ground units, above buildings)
+ 		if slowMobileUsedElements > 0 then
+ 			if hasOutlines then
+ 				gl.UniformFloat(ul.outlinePass, 1.0)
+-				gl4Icons.slowVao:DrawArrays(GL.POINTS, slowMobileUsedElements)
++				gl4Icons.slowVao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, slowMobileUsedElements)
+ 			end
+ 			gl.UniformFloat(ul.outlinePass, 0.0)
+-			gl4Icons.slowVao:DrawArrays(GL.POINTS, slowMobileUsedElements)
++			gl4Icons.slowVao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, slowMobileUsedElements)
+ 		end
+ 
+ 		-- Fast mobile (aircraft, commanders — always on top)
+ 		if mobileUsedElements > 0 then
+ 			if hasOutlines then
+ 				gl.UniformFloat(ul.outlinePass, 1.0)
+-				gl4Icons.vao:DrawArrays(GL.POINTS, mobileUsedElements)
++				gl4Icons.vao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, mobileUsedElements)
+ 			end
+ 			gl.UniformFloat(ul.outlinePass, 0.0)
+-			gl4Icons.vao:DrawArrays(GL.POINTS, mobileUsedElements)
++			gl4Icons.vao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, mobileUsedElements)
+ 		end
+ 
+ 		glFunc.Texture(0, false)
+@@ -14842,7 +14721,13 @@
+ 		vbo:Delete()
+ 		return
+ 	end
+-	vao:AttachVertexBuffer(vbo)
++	-- BAR-on-mac: corner buffer at location 4 (decal instance data uses 0-3)
++	local decalCornerVBO = gl.GetVBO(GL.ARRAY_BUFFER, false)
++	decalCornerVBO:Define(4, {{id = 4, name = 'cornerOffset', size = 2}})
++	decalCornerVBO:Upload({-1,-1,  1,-1,  -1,1,  1,1})
++	decalGL4.cornerVBO = decalCornerVBO
++	vao:AttachVertexBuffer(decalCornerVBO)  -- per-vertex quad corners
++	vao:AttachInstanceBuffer(vbo)            -- per-instance decal data
+ 
+ 	-- Pre-allocate instance data array
+ 	local instanceData = {}
+@@ -14956,7 +14841,7 @@
+ 			local ul = decalGL4.uniformLocs
+ 			gl.UniformFloat(ul.gameFrame, decalGL4.renderFrame)
+ 			gl.UniformFloat(ul.invMapSize, 2.0 / mapInfo.mapSizeX, 2.0 / mapInfo.mapSizeZ)
+-			decalGL4.vao:DrawArrays(GL.POINTS, decalGL4.instanceCount)
++			decalGL4.vao:DrawArrays(GL.TRIANGLE_STRIP, 4, 0, decalGL4.instanceCount)
+ 			gl.UseShader(0)
+ 			glFunc.Texture(false)
+ 		end
